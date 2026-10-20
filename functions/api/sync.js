@@ -1,76 +1,33 @@
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
 const MAX_PAYLOAD = 95000;
-let cachedToken = '';
-let tokenExpiresAt = 0;
 
 function reply(status, body) {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
 function config(env) {
-  const names = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_APP_TOKEN', 'FEISHU_TABLE_ID'];
-  const missing = names.filter(name => !env[name]);
-  if (missing.length) throw new Error('飞书同步尚未配置：请在 Cloudflare Pages 设置飞书环境变量。');
-  return env;
+  if (!env.WPS_SYNC_URL || !env.WPS_SCRIPT_TOKEN) {
+    throw new Error('WPS 同步尚未配置：请在 Cloudflare Pages 设置 WPS 环境变量。');
+  }
+  let url;
+  try { url = new URL(env.WPS_SYNC_URL); } catch { throw new Error('WPS webhook 地址无效。'); }
+  if (url.protocol !== 'https:' || !['www.kdocs.cn', 'www.wps.com'].includes(url.hostname)) {
+    throw new Error('WPS webhook 必须是官方 HTTPS 地址。');
+  }
+  return { url: url.toString(), token: env.WPS_SCRIPT_TOKEN };
 }
 
-function syncHash(key) {
-  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(key))
-    .then(bytes => [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, '0')).join(''));
+async function hashSyncKey(key) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+  return [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, '0')).join('');
 }
 
 function syncKey(request) {
-  const value = request.headers.get('authorization') || '';
-  const match = /^Bearer ([a-f0-9]{64})$/i.exec(value);
-  if (!match) throw new Error('同步码无效。');
-  return match[1].toLowerCase();
-}
-
-async function tenantToken(env) {
-  if (cachedToken && Date.now() < tokenExpiresAt - 60_000) return cachedToken;
-  const response = await fetch('https://accounts.feishu.cn/oauth/v3/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ grant_type: 'client_credentials', client_id: env.FEISHU_APP_ID, client_secret: env.FEISHU_APP_SECRET })
-  });
-  const body = await response.json();
-  if (!response.ok || !body.access_token) throw new Error('无法取得飞书访问令牌，请检查应用 ID 和密钥。');
-  cachedToken = body.access_token;
-  tokenExpiresAt = Date.now() + Math.max(60, Number(body.expires_in) || 7200) * 1000;
-  return cachedToken;
-}
-
-function recordUrl(env, keyHash) {
-  const url = new URL(`https://open.feishu.cn/open-apis/bitable/v1/apps/${encodeURIComponent(env.FEISHU_APP_TOKEN)}/tables/${encodeURIComponent(env.FEISHU_TABLE_ID)}/records`);
-  url.searchParams.set('page_size', '2');
-  url.searchParams.set('filter', `CurrentValue.[sync_hash] = "${keyHash}"`);
-  url.searchParams.set('field_names', JSON.stringify(['sync_hash', 'payload']));
-  return url;
-}
-
-function textValue(value) {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(part => typeof part === 'string' ? part : part?.text || '').join('');
-  return '';
-}
-
-async function bitable(env, url, init = {}) {
-  const response = await fetch(url, {
-    ...init,
-    headers: { authorization: `Bearer ${await tenantToken(env)}`, 'content-type': 'application/json; charset=utf-8', ...(init.headers || {}) }
-  });
-  const body = await response.json();
-  if (!response.ok || body.code !== 0) {
-    const error = new Error('飞书多维表格请求失败。请检查应用权限、表格授权和字段名称。');
-    error.status = response.status;
-    throw error;
+  const match = /^Bearer ([a-f0-9]{64})$/i.exec(request.headers.get('authorization') || '');
+  if (!match) {
+    const error = new Error('同步码无效。'); error.status = 401; throw error;
   }
-  return body.data;
-}
-
-async function findRecord(env, keyHash) {
-  const data = await bitable(env, recordUrl(env, keyHash));
-  return (data.items || []).find(item => textValue(item.fields?.sync_hash) === keyHash) || null;
+  return match[1].toLowerCase();
 }
 
 async function readLimitedJson(request) {
@@ -84,9 +41,7 @@ async function readLimitedJson(request) {
     size += value.byteLength;
     if (size > MAX_PAYLOAD + 1024) {
       await reader.cancel();
-      const error = new Error('同步数据太大。请导出本地 JSON 备份。');
-      error.status = 413;
-      throw error;
+      const error = new Error('同步数据太大。请导出本地 JSON 备份。'); error.status = 413; throw error;
     }
     chunks.push(value);
   }
@@ -96,33 +51,55 @@ async function readLimitedJson(request) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
+function unwrapScriptResult(body) {
+  if (!body || body.status !== 'finished' || body.error) {
+    throw new Error('WPS AirScript 执行失败。请检查脚本、表格字段和 WPS 凭据。');
+  }
+  let result = body.data?.result;
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result); } catch { /* keep non-JSON result for a clear error below */ }
+  }
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new Error('WPS AirScript 返回格式不正确。请检查表格中的共享脚本。');
+  }
+  return result;
+}
+
+async function runAirScript(configured, argv) {
+  const response = await fetch(configured.url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'AirScript-Token': configured.token },
+    body: JSON.stringify({ Context: { argv } })
+  });
+  let body;
+  try { body = await response.json(); } catch { throw new Error('WPS API 返回了无法识别的响应。'); }
+  if (!response.ok) {
+    const error = new Error(`WPS API 请求失败（HTTP ${response.status}）。请检查 webhook 和脚本令牌。`);
+    error.status = 502; throw error;
+  }
+  return unwrapScriptResult(body);
+}
+
 async function handle(request, env) {
-  config(env);
+  const configured = config(env);
   const method = request.method.toUpperCase();
   if (method !== 'GET' && method !== 'PUT') return reply(405, { error: '仅支持 GET 和 PUT。' });
-  const key = syncKey(request);
-  const keyHash = await syncHash(key);
-  const endpoint = recordUrl(env, keyHash);
+  const keyHash = await hashSyncKey(syncKey(request));
 
   if (method === 'GET') {
-    const record = await findRecord(env, keyHash);
-    return reply(200, { record: record ? { payload: textValue(record.fields?.payload) } : null });
+    const result = await runAirScript(configured, { operation: 'get', keyHash });
+    if (!result.ok) throw new Error('WPS AirScript 查询失败。请检查表格配置。');
+    return reply(200, { record: result.payload ? { payload: result.payload } : null });
   }
 
   const length = Number(request.headers.get('content-length') || 0);
   if (length > MAX_PAYLOAD + 1024) return reply(413, { error: '同步数据太大。请导出本地 JSON 备份。' });
   const body = await readLimitedJson(request);
   if (typeof body.payload !== 'string' || body.payload.length > MAX_PAYLOAD) {
-    return reply(413, { error: '同步数据超过飞书单元格支持的大小。请减少个人笔记后再试。' });
+    return reply(413, { error: '同步数据超过 WPS 单条记录支持的大小。请减少个人笔记后再试。' });
   }
-  const record = await findRecord(env, keyHash);
-  const fields = { sync_hash: keyHash, payload: body.payload };
-  if (record) {
-    const url = new URL(`${endpoint.origin}${endpoint.pathname}/${encodeURIComponent(record.record_id)}`);
-    await bitable(env, url, { method: 'PUT', body: JSON.stringify({ fields }) });
-  } else {
-    await bitable(env, endpoint, { method: 'POST', body: JSON.stringify({ fields }) });
-  }
+  const result = await runAirScript(configured, { operation: 'put', keyHash, payload: body.payload });
+  if (!result.ok) throw new Error('WPS AirScript 写入失败。请检查表格配置。');
   return reply(200, { ok: true });
 }
 
@@ -130,8 +107,8 @@ export async function onRequest({ request, env }) {
   try {
     return await handle(request, env);
   } catch (error) {
-    const message = error.message || '飞书同步失败。';
-    const status = /同步码无效/.test(message) ? 401 : /尚未配置/.test(message) ? 503 : error.status || 502;
+    const message = error.message || 'WPS 同步失败。';
+    const status = /尚未配置/.test(message) ? 503 : error.status || 502;
     return reply(status, { error: message });
   }
 }
