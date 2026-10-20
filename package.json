@@ -1,0 +1,12 @@
+{
+  "name": "kaoyanfuxi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "node tools/serve.mjs",
+    "deploy": "npm run build && npx wrangler pages deploy dist --project-name kaoyanfuxi"
+  },
+  "engines": { "node": ">=20" }
+}

@@ -1,0 +1,10 @@
+dist/
+node_modules/
+.wrangler/
+.env*
+*.log
+*.pdf
+*.docx
+*.jpg
+*.png
+local-only/
