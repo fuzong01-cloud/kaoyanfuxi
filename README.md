@@ -56,7 +56,7 @@ npm run build
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4173`。修改源文件后重新运行构建并刷新页面。
+打开 `http://127.0.0.1:4173`。修改源文件后重新运行构建并刷新页面。此Node静态预览不运行Pages Function，因此飞书同步须在Cloudflare Pages上验证；网站正文、本地复习和JSON备份可在本地预览。
 
 构建输出在`dist/`。`dist/study-guide.md`为45个主题的复习提纲，`dist/question-index.md`为全部题目与考纲的对照索引。
 
@@ -75,15 +75,39 @@ Cloudflare项目由使用者自行创建。本次代码提交不代表网站已�
 | 根目录 | 留空（仓库根目录） |
 | 环境变量 | `NODE_VERSION=22`（如需显式指定） |
 
-项目是静态网站，**需要执行构建**以生成题库JSON；不能直接把`public/`当完整成品。无API密钥、无后端、无数据库。无需填写Workers部署命令，也无需安装cloudflared隧道。
+网站正文是静态资源，**需要执行构建**以生成题库JSON；不能直接把`public/`当完整成品。飞书同步另由仓库根目录的`functions/api/sync.js`提供 Pages Functions 接口；用户不启用同步时，网站继续使用本地存储。无需安装cloudflared隧道。
 
 保存并部署后，Cloudflare会给出实际`pages.dev`地址。后续推送main可自动构建发布。流程参考[Cloudflare静态HTML部署文档](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)。
 
-如果选择手工Direct Upload，先本地执行`npm run build`，上传`dist`目录内容；上传的根目录必须直接包含`index.html`。Git集成与手动上传两种方式选一种即可。
+如需飞书同步，请使用 GitHub 集成部署；Cloudflare 控制台的拖拽 Direct Upload 不支持 Pages Functions，因而不包含`/api/sync`后端。Cloudflare 官方说明见[Pages Functions 部署指南](https://developers.cloudflare.com/pages/functions/get-started/)。仅发布静态站点时，手工 Direct Upload 仍可用，但不启用飞书同步。
+
+## 飞书同步配置
+
+此功能使用**飞书多维表格**，不是普通电子表格。每位考生在网站生成一个独立的64位同步码；它相当于访问密码，跨设备输入同一码即可同步。没有账号注册或密码登录流程。未启用前，进度只在当前浏览器本地保存。
+
+### 一次性管理员配置
+
+1. 在飞书开放平台创建自建应用，启用多维表格读写相关权限，并发布应用。飞书 App Secret 只供服务端使用，不能放进网页代码。
+2. 在飞书新建一张**仅自己/管理员可访问**的多维表格，新增两列，字段名严格设为`sync_hash`和`payload`，类型都选文本（`payload`建议多行文本）。把应用添加到这张表并授予编辑权限。飞书记录 API 支持服务端新增、查询和更新记录，应用的访问令牌也应在服务端管理。[飞书新增记录 API](https://open.feishu.cn/document/server-docs/docs/bitable-v1/app-table-record/create)、[飞书应用访问令牌说明](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token)
+3. 在飞书多维表格链接中找到`app_token`（`/base/`后面的标识）和`table_id`（数据表标识）。
+4. 在 Cloudflare Pages 项目设置的 **Settings → Variables and Secrets** 中，为生产环境增加以下变量；`FEISHU_APP_SECRET`务必选择 Secret。
+
+| 变量 | 值 |
+| --- | --- |
+| `FEISHU_APP_ID` | 飞书自建应用的 App ID |
+| `FEISHU_APP_SECRET` | 飞书自建应用的 App Secret（Secret） |
+| `FEISHU_APP_TOKEN` | 多维表格的 app_token |
+| `FEISHU_TABLE_ID` | 上述数据表的 table_id |
+
+5. 保存配置后重新部署 Pages。Git 集成会将`functions/api/sync.js`部署为`/api/sync`接口。配置完成后，用户进入“学习记录”，点“创建新同步码”或输入已有同步码。
+
+该接口将同步码的 SHA-256 摘要作为表格检索键，记录正文压缩后保存；飞书表格不直接保存原始同步码。用户的复习记录仍保留本机副本。关掉某台设备的同步不会删除云端记录；请在飞书表格中自行清理对应记录。同步码丢失后无法从服务器还原，旧设备仍可显示并复制它；建议定期另存 JSON 备份。
 
 ## 数据与隐私
 
-学习进度只存当前浏览器的localStorage，包括自评、草稿、笔记、收藏、每日目标。无登录，不会上传这些学习记录。跨设备、跨浏览器、跨域名需导出并导入；清除站点数据会丢失未备份记录。JSON备份含个人笔记，请自行保管。
+学习进度默认存当前浏览器的localStorage，包括自评、草稿、笔记、收藏、每日目标。用户启用飞书同步后，本站 Pages Function 会将这些记录同步到管理员绑定的飞书多维表格；飞书表格管理员能够查看其内容。同步码是 bearer 凭证，任何拿到同步码的人都能访问并合并对应记录，请像密码一样保管。换设备需在“学习记录”输入同一码。关闭同步只影响当前设备；若不再需要，另在飞书表格中删除云端记录。清除浏览器数据会删除本机同步码和未同步记录。JSON备份也含个人笔记，请自行保管。
+
+飞书 API 密钥只存在 Cloudflare Pages 环境变量/Secret中，前端源码不包含这些凭证。同步按按钮触发或本地改动后延迟约1.4秒触发；无网络时学习进度仍保留在本机，可以联网后重试。复习评价按较新的评价合并，笔记和草稿按本地编辑时间合并，收藏取并集，历史记录去重；同一笔记在多台设备同时改动时，较晚同步的内容可能覆盖较早版本，重要记录请保留 JSON 备份。
 
 “稳定掌握”表示间隔阶段达到3且最近自评至少“基本会答”，并非考试成绩预测。到期提醒仅在打开网站时显示，无后台通知。
 
@@ -99,6 +123,7 @@ Cloudflare项目由使用者自行创建。本次代码提交不代表网站已�
 | `data/library.json` | 学生原笔记阅读章节 |
 | `public/app.js` | 界面、筛选、学习流程 |
 | `public/progress-model.js` | 间隔复习与备份合并 |
+| `functions/api/sync.js` | Cloudflare Pages Function：飞书多维表格同步 API |
 | `public/style.css` | 电脑和手机样式 |
 | `tools/build.mjs` | 构建静态文件和离线提纲 |
 | `wrangler.toml` | Pages输出目录配置 |

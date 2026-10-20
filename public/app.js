@@ -3,8 +3,10 @@ import {emptyState,dayKey,schedule,eligible,normalizeBackup,mergeState} from './
 const $ = (s, root=document)=>root.querySelector(s);
 const esc = v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const KEY='zhigeng-study-v1';
+const SYNC_KEY='zhigeng-feishu-sync-v1';
 let data, state=emptyState(), library, questions, topics, sourceMap, syllabusMap, moduleMap, session=null;
 let renderVersion=0, toastTimer, storageFailed=false;
+let syncCode='',syncReady=false,syncing=false,syncPending=false,syncTimer=null,syncStatus='仅保存在此浏览器';
 const labels={direct:'考纲内',related:'相关拓展',retired:'旧纲归档'};
 const paths={home:'学习工作台',module:'模块学习',syllabus:'考纲地图',bank:'题库与真题',question:'题目研习',practice:'主动回忆',library:'资料书架',reading:'资料阅读',progress:'学习记录',sources:'资料依据'};
 const icons={home:'◫',syllabus:'◎',bank:'▤',practice:'▷',library:'▥',progress:'▥',code:'〈/〉',nodes:'✧',leaf:'❧',grid:'▦'};
@@ -18,7 +20,29 @@ const button=(label,action,extra='',cls='button')=>`<button class="${cls}" data-
 const link=(label,href,cls='button secondary')=>`<a class="${cls}" href="${esc(href)}">${label}</a>`;
 const empty=(title,text,action='')=>`<div class="empty"><span>❧</span><h2>${title}</h2><p>${text}</p>${action}</div>`;
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4000);}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(state));storageFailed=false;}catch{storageFailed=true;toast('浏览器存储不可用或已满，请立即导出备份。');}}
+function save(push=true){try{localStorage.setItem(KEY,JSON.stringify(state));storageFailed=false;if(push&&syncReady&&syncCode)scheduleSync();}catch{storageFailed=true;toast('浏览器存储不可用或已满，请立即导出备份。');}}
+function setSyncStatus(value){syncStatus=value;const el=$('#sync-status');if(el)el.textContent=value;}
+function scheduleSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>syncNow({quiet:true}),1400);}
+function bytesToBase64(bytes){let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return btoa(binary);}
+async function encodeCloudState(value){const stream=new Blob([JSON.stringify(value)]).stream().pipeThrough(new CompressionStream('gzip'));return bytesToBase64(new Uint8Array(await new Response(stream).arrayBuffer()));}
+async function decodeCloudState(value){const binary=atob(value),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));return JSON.parse(await new Response(stream).text());}
+async function syncNow({quiet=false}={}){
+ if(!syncCode)return;
+ if(syncing){syncPending=true;return;}
+ syncing=true;setSyncStatus('正在连接飞书…');
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+ try{
+  const headers={authorization:`Bearer ${syncCode}`};
+  const response=await fetch('/api/sync',{headers,signal:controller.signal});
+  const result=await response.json();if(!response.ok)throw new Error(result.error||'读取飞书记录失败。');
+  if(result.record?.payload){const remote=normalizeBackup(await decodeCloudState(result.record.payload),new Set(Object.keys(questions)));state=mergeState(state,remote);save(false);}
+  const payload=await encodeCloudState(state);if(payload.length>95000)throw new Error('学习记录压缩后仍超过飞书单元格容量；进度仍保存在本机，请导出 JSON 备份。');
+  const saved=await fetch('/api/sync',{method:'PUT',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({payload}),signal:controller.signal});
+  const result2=await saved.json();if(!saved.ok)throw new Error(result2.error||'写入飞书记录失败。');
+  setSyncStatus(`飞书已同步 · ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`);
+ }catch(error){const message=error.name==='AbortError'?'连接超时，请稍后重试。':error.message;setSyncStatus('同步失败，记录仍保存在本机');if(!quiet)toast(message);}
+ finally{clearTimeout(timeout);syncing=false;if(syncPending){syncPending=false;scheduleSync();}}
+}
 function reviewed(id){return Boolean(state.reviews[id]);}
 function mastered(id){const r=state.reviews[id];return Boolean(r&&r.quality>=2&&r.stage>=3);}
 function due(id){return state.reviews[id]?.due<=Date.now();}
@@ -101,9 +125,10 @@ async function renderLibrary(params){await getLibrary();const mod=params.get('mo
 }
 function excerpt(text,search){const i=text.toLowerCase().indexOf(search.toLowerCase());return text.slice(Math.max(0,i-30),Math.max(0,i-30)+160);}
 async function renderReading(id){await getLibrary();const s=library.find(x=>x.id===id);if(!s)return empty('未找到章节','请从资料书架重新打开。',link('资料书架','#library'));return `${head('STUDENT NOTES',esc(s.title),esc(sourceMap[s.source].name),link('本模块学习 →','#module/'+s.module))}<div class="notice">${esc(s.notice)}</div><div class="reader-toolbar"><span>${s.text.length.toLocaleString()} 字符 · 可用浏览器查找定位原文</span>${button('打印此章节','print','','button secondary')}</div><article class="reader">${para(s.text)}</article>`;}
-function renderProgress(){const active=data.questions.filter(eligible), weak=active.filter(q=>state.reviews[q.id]?.quality<2), bookmarks=active.filter(q=>state.bookmarks.includes(q.id));return `${head('YOUR PROGRESS','让积累，看得见。','记录属于当前浏览器。换设备或清理浏览器前，请先导出备份。')}
+function renderProgress(){const active=data.questions.filter(eligible), weak=active.filter(q=>state.reviews[q.id]?.quality<2), bookmarks=active.filter(q=>state.bookmarks.includes(q.id));return `${head('YOUR PROGRESS','让积累，看得见。','记录属于当前浏览器；启用飞书后，可用同步码在其他设备继续。')}
+ <section class="panel sync-panel"><div class="section-heading"><h2>飞书云端同步</h2><span id="sync-status" class="muted">${esc(syncStatus)}</span></div><p>学习记录仍会先保存在本机。同步码相当于访问密码：可在多台设备输入同一码同步，请勿发给别人。飞书 App Secret 只配置在 Cloudflare 后端。</p>${syncCode?`<div class="sync-code-row"><label for="sync-code-value">本机同步码</label><input id="sync-code-value" type="password" readonly value="${esc(syncCode)}" autocomplete="off"><button class="button secondary" data-action="toggle-sync-code">显示</button><button class="button secondary" data-action="copy-sync-code">复制</button></div><div class="button-row">${button('立即同步','sync-now')}${button('关闭此设备同步','unlink-sync','','button secondary')}</div>`:`<div class="button-row">${button('创建新同步码','enable-sync')}${button('输入已有同步码','show-sync-connect','','button secondary')}</div><form id="sync-connect-form" class="sync-connect" hidden><label for="sync-code-input">已有同步码（64位十六进制）</label><input id="sync-code-input" name="syncCode" inputmode="text" minlength="64" maxlength="64" pattern="[a-fA-F0-9]{64}" autocomplete="off" required><button class="button">连接并合并记录</button></form>`}<p class="fine-print">首次使用前，管理员需按 README 配置飞书应用、多维表格和 Cloudflare Pages 环境变量。同步码丢失后无法找回；JSON 导出仍可作额外备份。</p></section>
  <div class="bottom-grid"><section class="panel"><div class="section-heading"><h2>最近七天</h2><span>${state.history.length} 次累计复习</span></div>${activity()}</section><section class="panel"><h2>每日目标</h2><p class="muted">建议以能认真回忆、核对的数量为准。</p><form id="goal-form" class="goal-form"><label for="goal">每天复习</label><input type="number" id="goal" name="goal" min="1" max="100" required value="${state.goal}"><span>道</span><button class="button secondary">保存目标</button></form><p class="fine-print">今日已自评 ${todayHistory().length} 次。重复复习会计入次数。</p></section></div>
- <section class="panel backup-panel"><div><h2>把学习记录随身带走</h2><p>备份包含自评、草稿、笔记、收藏。导入时合并记录，保留较新的复习进度，已有笔记优先。</p>${storageFailed?'<p class="error">当前浏览器存储不可用，请立即备份。</p>':''}</div><div class="button-row">${button('↓ 导出备份','export')}${button('↑ 导入备份','import','','button secondary')}</div></section>
+ <section class="panel backup-panel"><div><h2>把学习记录随身带走</h2><p>备份包含自评、草稿、笔记、收藏。导入时合并记录，复习评价按时间更新，笔记按编辑时间合并。</p>${storageFailed?'<p class="error">当前浏览器存储不可用，请立即备份。</p>':''}</div><div class="button-row">${button('↓ 导出备份','export')}${button('↑ 导入备份','import','','button secondary')}</div></section>
  ${moduleCards()}<div class="bottom-grid"><section class="panel"><div class="section-heading"><h2>待巩固 <span class="count">${weak.length}</span></h2>${link('开始巩固 →',url('practice',{mode:'weak'}),'text-link')}</div>${questionList(weak,5)}${weak.length>5?link('查看全部 →',url('bank',{filter:'weak'}),'text-link'):''}</section><section class="panel"><div class="section-heading"><h2>我的收藏 <span class="count">${bookmarks.length}</span></h2>${link('查看全部 →',url('bank',{filter:'bookmarks'}),'text-link')}</div>${questionList(bookmarks,5)}</section></div>
  <section class="panel"><h2>间隔复习怎样安排</h2><p>“还不会”在10分钟后重现；“有点模糊”保持当前阶段；“基本会答”前进一阶段；“能举一反三”前进两阶段。各阶段间隔为1、1、3、7、14、30天。</p><p class="muted">这是用于学习安排的简化规则。稳定掌握表示阶段达到3且最近自评会答，不等于真实考试分数。系统不会发通知，到期题在下次打开网站时显示。</p></section>`;}
 function renderSources(id){return `${head('SOURCES & SCOPE','知道依据，才能放心复习。','考纲控制范围，学生总结提供主体，教材用于辅助理解与核查。')}
@@ -124,16 +149,23 @@ document.addEventListener('click',e=>{if(e.target.closest('a.skip')){e.preventDe
  case'reveal':session.reveal=true;render();break;
  case'grade':{if(!questions[id]||!eligible(questions[id]))break;const quality=Number(b.dataset.quality);state.reviews[id]=schedule(state.reviews[id],quality);state.history.push({id,quality,at:Date.now()});state.history=state.history.slice(-20000);save();if(session&&session.ids[session.index]===id){session.grades.push(quality);session.index++;session.reveal=false;session.selected=null;}render();toast('已记录，下次复习：'+(quality===0?'约10分钟后':date(state.reviews[id].due)));break;}
  case'restart':session=null;if(location.hash==='#practice')render();else location.hash='practice';break;
+ case'enable-sync':{if(!crypto?.getRandomValues){toast('此浏览器无法生成安全同步码，请升级浏览器。');break;}syncCode=Array.from(crypto.getRandomValues(new Uint8Array(32)),x=>x.toString(16).padStart(2,'0')).join('');localStorage.setItem(SYNC_KEY,syncCode);syncReady=true;render().then(()=>syncNow());break;}
+ case'show-sync-connect':{const form=$('#sync-connect-form');if(form){form.hidden=false;$('#sync-code-input')?.focus();}break;}
+ case'sync-now':void syncNow();break;
+ case'unlink-sync':{clearTimeout(syncTimer);syncCode='';syncReady=false;localStorage.removeItem(SYNC_KEY);setSyncStatus('仅保存在此浏览器');render();toast('此设备已关闭飞书同步，本地记录保留。');break;}
+ case'toggle-sync-code':{const input=$('#sync-code-value');if(input){const show=input.type==='password';input.type=show?'text':'password';b.textContent=show?'隐藏':'显示';}break;}
+ case'copy-sync-code':{const value=syncCode;if(!value)break;if(navigator.clipboard?.writeText){void navigator.clipboard.writeText(value).then(()=>toast('同步码已复制，请像密码一样妥善保管。')).catch(()=>{const input=$('#sync-code-value');input.type='text';input.select();toast('自动复制不可用，已选中同步码，请手动复制。');});}else{const input=$('#sync-code-value');input.type='text';input.select();toast('自动复制不可用，已选中同步码，请手动复制。');}break;}
  case'export':{const blob=new Blob([JSON.stringify({...state,exportedAt:new Date().toISOString()},null,2)],{type:'application/json'});const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=`知耕复习备份-${dayKey()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('备份已导出，请妥善保存。');break;}
  case'import':$('#backup-file').click();break;
  case'print':window.print();break;
  case'reload':location.reload();break;
 }});
-document.addEventListener('input',e=>{const el=e.target;if(el.matches('[data-save]')){state[el.dataset.save][el.dataset.id]=el.value;save();}});
-document.addEventListener('submit',e=>{const form=e.target;if(!['bank-filter','library-filter','syllabus-filter','goal-form'].includes(form.id))return;e.preventDefault();const values=new FormData(form);if(form.id==='goal-form'){const n=Number(values.get('goal'));if(Number.isInteger(n)&&n>=1&&n<=100){state.goal=n;save();toast('每日目标已保存');}return;}const p=new URLSearchParams();for(const [key,value]of values)if(value||key==='status')p.set(key,value);location.hash=(form.id==='bank-filter'?'bank':form.id==='library-filter'?'library':'syllabus')+'?'+p;});
+document.addEventListener('input',e=>{const el=e.target;if(el.matches('[data-save]')){const key=el.dataset.save;state[key][el.dataset.id]=el.value;state[key==='drafts'?'draftAt':'noteAt'][el.dataset.id]=Date.now();save();}});
+document.addEventListener('submit',async e=>{const form=e.target;if(!['bank-filter','library-filter','syllabus-filter','goal-form','sync-connect-form'].includes(form.id))return;e.preventDefault();const values=new FormData(form);if(form.id==='sync-connect-form'){const code=String(values.get('syncCode')||'').trim().toLowerCase();if(!/^[a-f0-9]{64}$/.test(code)){toast('同步码应为64位十六进制字符。');return;}syncCode=code;localStorage.setItem(SYNC_KEY,syncCode);syncReady=true;await syncNow();await render();return;}if(form.id==='goal-form'){const n=Number(values.get('goal'));if(Number.isInteger(n)&&n>=1&&n<=100){state.goal=n;state.goalAt=Date.now();save();toast('每日目标已保存');}return;}const p=new URLSearchParams();for(const [key,value]of values)if(value||key==='status')p.set(key,value);location.hash=(form.id==='bank-filter'?'bank':form.id==='library-filter'?'library':'syllabus')+'?'+p;});
 $('#backup-file').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>15*1024*1024)throw new Error('备份超过15MB，请选择本系统导出的文件。');const incoming=normalizeBackup(JSON.parse(await file.text()),new Set(data.questions.map(q=>q.id)));state=mergeState(state,incoming);save();await render();toast('备份已合并，已有笔记保留。');}catch(err){toast('导入失败：'+err.message);}e.target.value='';});
 $('#menu-toggle').addEventListener('click',()=>{const open=$('#sidebar').classList.toggle('open');$('#menu-toggle').setAttribute('aria-expanded',String(open));});
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();if(location.hash.startsWith('#bank'))$('#bank-search')?.focus();else{location.hash='bank';setTimeout(()=>$('#bank-search')?.focus(),100);}}if(e.key==='Escape'){$('#sidebar').classList.remove('open');$('#menu-toggle').setAttribute('aria-expanded','false');}});
 window.addEventListener('hashchange',()=>{if(data)render();});
 window.addEventListener('storage',e=>{if(e.key===KEY&&e.newValue&&data){try{state=mergeState(state,normalizeBackup(JSON.parse(e.newValue),new Set(data.questions.map(q=>q.id))));toast('已同步此浏览器另一标签页的记录，切换页面可查看。');}catch{}}});
-try{const response=await fetch('/content/catalog.json');if(!response.ok)throw new Error('题库文件读取失败');data=await response.json();questions=Object.fromEntries(data.questions.map(q=>[q.id,q]));topics=Object.fromEntries(data.topics.map(t=>[t.id,t]));sourceMap=Object.fromEntries(data.sources.map(s=>[s.id,s]));syllabusMap=Object.fromEntries(data.syllabus.map(s=>[s.id,s]));moduleMap=Object.fromEntries(data.modules.map(m=>[m.id,m]));try{const saved=localStorage.getItem(KEY);if(saved)state=normalizeBackup(JSON.parse(saved),new Set(Object.keys(questions)));}catch{toast('本地记录读取失败。可到学习记录页导入备份。');}await render();}catch(error){$('#main').innerHTML=empty('学习资料暂时无法载入',esc(error.message),button('重新加载','reload'));}
+window.addEventListener('online',()=>{if(syncCode)syncNow({quiet:true});});
+try{const response=await fetch('/content/catalog.json');if(!response.ok)throw new Error('题库文件读取失败');data=await response.json();questions=Object.fromEntries(data.questions.map(q=>[q.id,q]));topics=Object.fromEntries(data.topics.map(t=>[t.id,t]));sourceMap=Object.fromEntries(data.sources.map(s=>[s.id,s]));syllabusMap=Object.fromEntries(data.syllabus.map(s=>[s.id,s]));moduleMap=Object.fromEntries(data.modules.map(m=>[m.id,m]));try{const saved=localStorage.getItem(KEY);if(saved)state=normalizeBackup(JSON.parse(saved),new Set(Object.keys(questions)));syncCode=localStorage.getItem(SYNC_KEY)||'';}catch{toast('本地记录读取失败。可到学习记录页导入备份。');}if(syncCode){await syncNow({quiet:true});syncReady=true;}else syncReady=true;await render();}catch(error){$('#main').innerHTML=empty('学习资料暂时无法载入',esc(error.message),button('重新加载','reload'));}

@@ -1,4 +1,4 @@
-export const emptyState=()=>({version:1,reviews:{},drafts:{},notes:{},bookmarks:[],history:[],goal:12});
+export const emptyState=()=>({version:1,reviews:{},drafts:{},notes:{},draftAt:{},noteAt:{},bookmarks:[],history:[],goal:12,goalAt:0});
 export function dayKey(time=Date.now()){
  const d=new Date(time);
  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -24,16 +24,19 @@ export function normalizeBackup(raw,ids){
  for(const key of ['drafts','notes'])for(const [id,text] of Object.entries(raw[key]||{})){
   if(ids.has(id)&&typeof text==='string')next[key][id]=text.slice(0,15000);
  }
+ for(const key of ['draftAt','noteAt'])for(const [id,time] of Object.entries(raw[key]||{}))if(ids.has(id)&&Number.isFinite(time)&&time>=0)next[key][id]=time;
  next.bookmarks=[...new Set(Array.isArray(raw.bookmarks)?raw.bookmarks.filter(id=>ids.has(id)):[])];
  next.history=(Array.isArray(raw.history)?raw.history:[]).filter(h=>h&&ids.has(h.id)&&Number.isFinite(h.at)&&h.at>=0&&h.at<=8640000000000000&&Number.isInteger(h.quality)&&h.quality>=0&&h.quality<=3).slice(-20000).map(h=>({id:h.id,at:h.at,quality:h.quality}));
  if(Number.isInteger(raw.goal)&&raw.goal>=1&&raw.goal<=100)next.goal=raw.goal;
+ if(Number.isFinite(raw.goalAt)&&raw.goalAt>=0)next.goalAt=raw.goalAt;
  return next;
 }
 export function mergeState(a,b){
- const result={...a,reviews:{...a.reviews},drafts:{...a.drafts},notes:{...a.notes},
+ const result={...a,reviews:{...a.reviews},drafts:{...a.drafts},notes:{...a.notes},draftAt:{...a.draftAt},noteAt:{...a.noteAt},
   bookmarks:[...new Set([...a.bookmarks,...b.bookmarks])],history:[]};
  for(const [id,r] of Object.entries(b.reviews))if(!a.reviews[id]||r.reviewedAt>a.reviews[id].reviewedAt)result.reviews[id]=r;
- for(const key of ['drafts','notes'])for(const [id,text] of Object.entries(b[key]))if(!result[key][id])result[key][id]=text;
+ for(const key of ['drafts','notes']){const times=key==='drafts'?'draftAt':'noteAt';for(const [id,text] of Object.entries(b[key]))if(!result[key][id]||(b[times]?.[id]||0)>(a[times]?.[id]||0)){result[key][id]=text;result[times][id]=b[times]?.[id]||0;}}
+ if((b.goalAt||0)>(a.goalAt||0)){result.goal=b.goal;result.goalAt=b.goalAt;}
  result.history=[...new Map([...a.history,...b.history].map(h=>[`${h.id}-${h.at}`,h])).values()].sort((x,y)=>x.at-y.at).slice(-20000);
  return result;
 }

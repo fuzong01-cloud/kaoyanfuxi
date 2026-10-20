@@ -1,0 +1,13 @@
+.sync-panel{margin-bottom:22px;background:#fdfefb}
+.sync-panel>p{max-width:850px;font-size:12px;color:#7c8b72;line-height:1.9}
+.sync-panel .section-heading{margin-bottom:10px}
+.sync-panel .section-heading h2{margin:0}
+.sync-code-row{display:grid;grid-template-columns:auto minmax(180px,1fr) auto auto;align-items:center;gap:10px;margin:16px 0;font-size:11px;color:#75856a}
+.sync-code-row input,.sync-connect input{min-width:0;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#fff;color:#526747;font:11px/1.5 Consolas,monospace}
+.sync-connect{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin-top:18px}
+.sync-connect[hidden]{display:none}
+.sync-connect label{display:grid;gap:7px;font-size:11px;color:#75856a;flex:1;min-width:220px}
+.sync-connect input{max-width:480px}
+.sync-panel .fine-print{margin-top:17px}
+.sync-status{color:#73896b;font-size:11px}
+@media(max-width:650px){.sync-code-row{grid-template-columns:1fr 1fr}.sync-code-row label,.sync-code-row input{grid-column:1/-1}.sync-connect{align-items:stretch}.sync-connect label{min-width:100%}}
