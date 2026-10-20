@@ -56,7 +56,7 @@ npm run build
 npm run dev
 ```
 
-打开 `http://127.0.0.1:4173`。修改源文件后重新运行构建并刷新页面。此Node静态预览不运行Pages Function，因此 WPS 同步须在Cloudflare Pages上验证；网站正文、本地复习和JSON备份可在本地预览。
+打开 `http://127.0.0.1:4173`。修改源文件后重新运行构建并刷新页面。此 Node 静态预览不运行 Pages Functions，因此注册、登录和 WPS 写入需要在 Cloudflare Pages 上验证；题库正文可在本地预览。
 
 构建输出在`dist/`。`dist/study-guide.md`为45个主题的复习提纲，`dist/question-index.md`为全部题目与考纲的对照索引。
 
@@ -75,37 +75,38 @@ Cloudflare项目由使用者自行创建。本次代码提交不代表网站已�
 | 根目录 | 留空（仓库根目录） |
 | 环境变量 | `NODE_VERSION=22`（如需显式指定） |
 
-网站正文是静态资源，**需要执行构建**以生成题库JSON；不能直接把`public/`当完整成品。WPS同步另由仓库根目录的`functions/api/sync.js`提供 Pages Functions 接口；用户不启用同步时，网站继续使用本地存储。无需安装cloudflared隧道。
+网站正文是静态资源，**需要执行构建**以生成题库JSON；不能直接把`public/`当完整成品。本站账号和 WPS 数据同步由`functions/`下的 Pages Functions 提供。无需安装 cloudflared 隧道。
 
 保存并部署后，Cloudflare会给出实际`pages.dev`地址。后续推送main可自动构建发布。流程参考[Cloudflare静态HTML部署文档](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)。
 
 如需 WPS 同步，请使用 GitHub 集成部署；Cloudflare 控制台的拖拽 Direct Upload 不支持 Pages Functions，因而不包含`/api/sync`后端。Cloudflare 官方说明见[Pages Functions 部署指南](https://developers.cloudflare.com/pages/functions/get-started/)。仅发布静态站点时，手工 Direct Upload 仍可用，但不启用云同步。
 
-## WPS 同步配置
+## 账号与 WPS 数据配置
 
-此功能使用**WPS 多维表格 + AirScript**，普通本地 `.xlsx` 文件无法直接充当云数据库。每位考生在网站生成一个独立的64位同步码；它相当于访问密码，跨设备输入同一码即可同步。没有账号注册或密码登录流程。未启用前，进度只在当前浏览器本地保存。
+考生注册的是**本站账号**，无需 WPS 账号。注册和登录由本站完成，复习进度按账号分别保存到一份由系统所有者授权的 WPS 多维表格中。系统所有者只需完成一次数据服务配置；不需要逐个审批或创建考生账号。
 
-### 一次性管理员配置
+### 一次性系统配置
 
-1. 登录 WPS 网页端，新建一份**多维表格**，表格应仅由管理员持有。新建一张名为`学习记录`的数据表，字段名严格设为`sync_hash`和`payload`，类型选文本；`payload`建议选多行文本。每位考生的全部学习记录保存在一条`payload`记录中。
-2. 打开这份多维表格的 AirScript 编辑器，创建**文档共享脚本**，粘贴仓库中的[`wps/airscript-sync.js`](wps/airscript-sync.js)并保存。脚本会用同步码的 SHA-256 摘要定位记录，不会保存原始同步码。WPS 文档目前仅支持为“文档共享脚本”复制 webhook 链接。[WPS AirScript 脚本令牌与 webhook 说明](https://airsheet.wps.cn/docs/apitoken/intro.html)、[多维表记录 API](https://airsheet.wps.cn/docs/api/dbsheet/Record.html)
-3. 在 WPS AirScript 编辑器生成个人脚本令牌。WPS 要求账号完成实名认证；令牌是敏感凭据，官方说明默认有效期为180天。将复制到的 webhook 地址和脚本令牌保存在自己的密码管理器中，**不要发到聊天或写进仓库**。
-4. 在 Cloudflare Pages 项目 **Settings → Variables and Secrets** 的生产环境添加以下两项，并将令牌设为 Secret：
+1. 登录 WPS 网页端，新建一份仅系统所有者持有的**多维表格**，创建名为`用户数据`的数据表。新建六个文本字段，名称严格为`user_id`、`username`、`username_key`、`password_salt`、`password_hash`、`payload`；`payload`选择多行文本。
+2. 打开这份表格的 AirScript 编辑器，创建**文档共享脚本**，粘贴仓库中的[`wps/airscript-sync.js`](wps/airscript-sync.js)并保存，复制 webhook 地址。[WPS AirScript 脚本令牌与 webhook 说明](https://airsheet.wps.cn/docs/apitoken/intro.html)、[多维表记录 API](https://airsheet.wps.cn/docs/api/dbsheet/Record.html)
+3. 在 WPS AirScript 编辑器生成个人脚本令牌。WPS 要求账号完成实名认证；令牌默认有效期为180天，可延期。脚本令牌和 webhook 能访问这份表格，请像密码一样保管。
+4. 在 Cloudflare Pages 项目 **Settings → Variables and Secrets** 的生产环境设置以下变量。`WPS_SCRIPT_TOKEN`和`SESSION_SECRET`都设为 Secret；会话密钥需使用至少32个字符的随机值。
 
 | 变量 | 值 |
 | --- | --- |
-| `WPS_SYNC_URL` | 文档共享脚本的 HTTPS webhook 地址 |
+| `WPS_SYNC_URL` | AirScript 文档共享脚本 HTTPS webhook 地址 |
 | `WPS_SCRIPT_TOKEN` | WPS AirScript 个人脚本令牌（Secret） |
+| `SESSION_SECRET` | 至少32字符的随机会话签名密钥（Secret） |
 
-5. 保存并重新部署 Pages。Git 集成会将`functions/api/sync.js`部署为`/api/sync`接口。配置完成后，用户进入“学习记录”，点“创建新同步码”或输入已有同步码。
+5. 保存并重新部署 Pages。部署后，考生即可在登录页注册用户名和密码；登录后，进度会自动同步到对应的 WPS 用户行。Cloudflare Pages 必须通过 Git 集成部署以启用`functions/api/auth.js`和`functions/api/sync.js`。
 
-该接口通过 Cloudflare Pages Function 调用 WPS webhook，AirScript 将同步码的 SHA-256 摘要作为表格检索键，压缩后的记录保存在 WPS 表格中。用户的复习记录仍保留本机副本。关掉某台设备的同步不会删除云端记录；请在 WPS 表格中自行清理对应记录。同步码丢失后无法从服务器还原，旧设备仍可显示并复制它；建议定期另存 JSON 备份。
+本站使用 PBKDF2 对密码加盐哈希后再写入 WPS，不保存明文密码。会话使用 HttpOnly Cookie；用户进度按本站账号 ID 隔离。忘记密码暂不支持自助找回。原来未绑定账号的本机记录在该浏览器首次登录后转入第一个登录的本站账号；建议共用设备前先导出备份。
 
 ## 数据与隐私
 
-学习进度默认存当前浏览器的localStorage，包括自评、草稿、笔记、收藏、每日目标。用户启用 WPS 同步后，本站 Pages Function 会将这些记录同步到管理员绑定的 WPS 多维表格；表格管理员能够查看其内容。同步码是 bearer 凭证，任何拿到同步码的人都能访问并合并对应记录，请像密码一样保管。换设备需在“学习记录”输入同一码。关闭同步只影响当前设备；若不再需要，另在 WPS 表格中删除云端记录。清除浏览器数据会删除本机同步码和未同步记录。JSON备份也含个人笔记，请自行保管。
+学习进度包括自评、草稿、笔记、收藏、每日目标；登录用户会在当前浏览器保存一份，并同步到 WPS 中按账号隔离的记录。WPS 表格所有者能够查看表格内的账号名、密码哈希和学习数据。退出登录不会删除云端记录；如需删除账号数据，需由系统所有者在 WPS 表格中清理。清除浏览器数据不会删除云端记录。JSON备份也含个人笔记，请自行保管。
 
-WPS 脚本令牌只存在 Cloudflare Pages Secret 中，前端源码不包含这些凭证。同步按按钮触发或本地改动后延迟约1.4秒触发；无网络时学习进度仍保留在本机，可以联网后重试。复习评价按较新的评价合并，笔记和草稿按本地编辑时间合并，收藏取并集，历史记录去重；同一笔记在多台设备同时改动时，较晚同步的内容可能覆盖较早版本，重要记录请保留 JSON 备份。
+WPS 脚本令牌只存在 Cloudflare Pages Secret 中，前端源码不包含这些凭证。复习评价按较新的评价合并，笔记和草稿按本地编辑时间合并，收藏取并集，历史记录去重；同一笔记在多台设备同时改动时，较晚同步的内容可能覆盖较早版本，重要记录请保留 JSON 备份。
 
 “稳定掌握”表示间隔阶段达到3且最近自评至少“基本会答”，并非考试成绩预测。到期提醒仅在打开网站时显示，无后台通知。
 
@@ -121,7 +122,9 @@ WPS 脚本令牌只存在 Cloudflare Pages Secret 中，前端源码不包含这
 | `data/library.json` | 学生原笔记阅读章节 |
 | `public/app.js` | 界面、筛选、学习流程 |
 | `public/progress-model.js` | 间隔复习与备份合并 |
-| `functions/api/sync.js` | Cloudflare Pages Function：WPS AirScript 同步接口 |
+| `functions/api/auth.js` | 本站账号注册、登录和会话接口 |
+| `functions/api/sync.js` | Cloudflare Pages Function：按账号同步 WPS 数据 |
+| `functions/_utils/wps.js` | WPS 调用与签名会话工具 |
 | `wps/airscript-sync.js` | 需要粘贴到 WPS 的 AirScript 共享脚本 |
 | `public/style.css` | 电脑和手机样式 |
 | `tools/build.mjs` | 构建静态文件和离线提纲 |

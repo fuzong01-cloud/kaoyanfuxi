@@ -8,22 +8,24 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/sync.css">
+  <link rel="stylesheet" href="/account.css">
   <script type="module" src="/app.js"></script>
 </head>
-<body>
+<body class="auth-pending">
   <a href="#main" class="skip">跳到内容</a>
   <aside class="sidebar" id="sidebar">
     <a class="brand" href="#home"><img src="/favicon.svg" alt="" width="38" height="38"><span>知耕<small>一步一步，学有所获</small></span></a>
     <div class="edition"><span class="dot"></span> 2027 · 北京农学院</div>
     <nav aria-label="主导航" id="nav"></nav>
     <div class="side-course"><div class="eyebrow">我的专业课</div><a href="#module/program"><b>341</b><span>农业知识综合三</span></a><a href="#module/information"><b>821</b><span>现代农业与农业信息化</span></a></div>
-    <div class="side-bottom"><span class="save-dot"></span><span>进度保存在本机 / WPS<br><a href="#progress">同步与备份 →</a></span></div>
+    <div class="side-bottom"><span class="save-dot"></span><span>学习进度按本站账号保存<br><a href="#progress">账号与备份 →</a></span></div>
   </aside>
   <div class="workspace">
     <header class="topbar">
       <button class="icon-button menu-toggle" id="menu-toggle" aria-label="打开导航" aria-expanded="false">☰</button>
       <span id="breadcrumb">学习工作台</span>
       <a class="top-search" href="#bank"><span>⌕</span> 搜索考点与题目 <kbd>/</kbd></a>
+      <a class="account-entry" id="account-entry" href="#progress">账号与记录</a>
       <span class="top-year">2027 <span>备考中</span></span>
     </header>
     <main id="main" tabindex="-1"><div class="loading"><span class="spinner"></span>正在整理你的学习桌面…</div></main>
@@ -31,6 +33,6 @@
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <input type="file" id="backup-file" accept=".json,application/json" hidden>
-  <noscript>此复习系统需要启用JavaScript。学习进度保存在浏览器；启用 WPS 同步后可跨设备继续。</noscript>
+  <noscript>此复习系统需要启用 JavaScript。登录本站账号后可保存并同步学习进度。</noscript>
 </body>
 </html>
